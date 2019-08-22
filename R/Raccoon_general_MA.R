@@ -4,9 +4,14 @@
 #devtools::install_github("derele/MultiAmplicon", force= T)
 ## devtools::install_github("derele/dada2", force= T)
 
-library(MultiAmplicon)
 library(ggplot2)
+library(MultiAmplicon)
+library(reshape)
+library(phyloseq)
 library(data.table)
+library(taxonomizr)
+library(taxize)
+library(parallel)
 
 ## re-run or use pre-computed results for different parts of the pipeline:
 ## Set to FALSE to use pre-computed and saved results, TRUE to redo analyses.
@@ -51,8 +56,8 @@ names(filtRs) <- samples
 ## some files will be filtered out completely, therefore allowing 50
 ## files less present and still don't redo filtering
 if(doFilter){
-  lapply(seq_along(fastqF),  function (i) {
-    filterAndTrim(fastqF[i], filtFs[i], fastqR[i], filtRs[i],
+  filt.track <- lapply(seq_along(fastqF),  function (i) {
+          filterAndTrim(fastqF[i], filtFs[i], fastqR[i], filtRs[i],
                   truncLen=c(250,250), minLen=c(250,250), 
                   maxN=0, maxEE=2, truncQ=2, 
                   compress=TRUE, verbose=TRUE)
@@ -87,14 +92,6 @@ if(doMultiAmp){
                       verbose=0, multithread = 12)
   
   MAR <- derepMulti(MAR, mc.cores=12) 
-  #MAR.1 <- dadaMulti(MAR[, which(grepl("^P1", colnames(MAR)))], Ferr=errF, Rerr=errR,  pool=FALSE,
-    #               verbose=0, mc.cores=12)
-  #MAR.2 <- dadaMulti(MAR[, which(grepl("^P2", colnames(MAR)))], Ferr=errF, Rerr=errR,  pool=FALSE,
-    #                 verbose=0, mc.cores=12)
-  #MAR.3 <- dadaMulti(MAR[, which(grepl("^P3", colnames(MAR)))], Ferr=errF, Rerr=errR,  pool=FALSE,
-   #                  verbose=0, mc.cores=12)
-  #MA <- concatenateMultiAmplicon(MAR.1, MAR.2, what = "samples") 
-  #MA <- concatenateMultiAmplicon(MA, MAR.3, what = "samples")
   
   MAR <- dadaMulti(MAR, Ferr=errF, Rerr=errR,  pool=FALSE,
                      verbose=0, mc.cores=12)
@@ -113,35 +110,64 @@ if(doMultiAmp){
 } else{
   MAR <- readRDS("/SAN/Victors_playground/Metabarcoding/AA_Raccoon/MAR_complete.RDS") ###START from here now! 
 }
+## When loading an old MA object that lacks sample data, simply:
+MAR <- addSampleData(MAR)
 
-trackingF <- getPipelineSummary(MAR) 
-## doesn't work for now
+###New taxonomic assignment
 
-plotAmpliconNumbers(MAR)
+if (doTax){
+  Sys.setenv("BLASTDB" = "/SAN/db/blastdb/") #To make the annotation work, boss will fix this in the package
+  library("vctrs", lib.loc="/usr/local/lib/R/site-library")
+  MAR2 <- blastTaxAnnot(MAR,  dataBaseDir = Sys.getenv("BLASTDB"), negative_gilist = "/SAN/db/blastdb/uncultured.gi", num_threads = 22)
+  saveRDS(MAR2, file="/SAN/Victors_playground/Metabarcoding/AA_Raccoon/MAR2.Rds")
+} else {
+  MAR <- readRDS(file="/SAN/Victors_playground/Metabarcoding/AA_Raccoon/MAR2.Rds")
+}
+
+#rm(MAR2)
+##MAR2.Rds contains the taxonomic annotation data 
+
+trackingF <- getPipelineSummary(MAR2) 
+
+plotAmpliconNumbers(MAR2, cluster_cols= F)
 
 ## plotPipelineSummary(trackingF) 
 ## plotPipelineSummary(trackingF) + scale_y_log10()
 
-###New taxonomic assignment
+lapply(getTaxonTable(MAR2), function (x) table(as.vector(x[, "phylum"])))
 
-## When loading an old MA object that lacks sample data, simply:
-MAR <- addSampleData(MAR)
+lapply(getTaxonTable(MAR2), function (x) table(as.vector(x[, "genus"])))
 
-if (newTax){
-  MAR <- blastTaxAnnot(MAR,
-                       infasta="/SAN/Zebra/all_in.fasta",
-                       outblast="/SAN/Zebra/blast_out.fasta", 
-                       taxonSQL="/SAN/db/taxonomy/taxonomizr.sql")
-  saveRDS(MA7, file="/SAN/Zebra/MA7.Rds")
-} else {
-  MA7 <- readRDS(file="/SAN/Zebra/MA7.Rds")
-}
+lapply(getTaxonTable(MAR2), function (x) table(as.vector(x[, "species"])))
+
+###Add sample data 
+sample.dataR <- read.csv("~/AA_Raccoon/Raccoon_sample_data.csv")
+rownames(sample.dataR) <- sample.dataR$plate_ID
+
+MARsample <- addSampleData(MAR2, sample.dataR)
+
+clust <- plotAmpliconNumbers(MARsample[, which(colnames(MARsample)%in%
+                                       sample.dataR$plate_ID)])
+
+clusters.row <- cutree(clust$tree_row, k=12) ##Eliminate the 5 primer pairs that didn't work
+clusters.col <- cutree(clust$tree_col, k=3) ##Eliminate negative controls and samples didn't work
+
+keep.prime <- names(clusters.row)[clusters.row!=5]
+keep.sample <- names(clusters.col)[clusters.col!=3]
 
 
-#Sys.setenv("BLASTDB" = "/SAN/db/blastdb/") To make the annotation work, boss will fix this in the package
-#library("vctrs", lib.loc="/usr/local/lib/R/site-library")
-MAR <- blastTaxAnnot(MAR,  dataBaseDir = Sys.getenv("BLASTDB"), negative_gilist = "/SAN/db/blastdb/uncultured.gi", num_threads = 15)
+MAR3 <- MARsample[which(rownames(MARsample)%in%keep.prime),
+                which(colnames(MARsample)%in%
+                        keep.sample &
+                        colnames(MARsample)%in% sample.dataR$plate_ID)]
 
+plotAmpliconNumbers(MAR3)
+
+###Phyloseq object
+PS <- toPhyloseq(MAR3, samples=colnames(MAR3))
+###Still not working :S 
+
+####Old Pipeline for taxonomic assignment####
 ###Extract sequences to do taxonomic assignment 
 
 STNCR <- getSequenceTableNoChime(MAR)
