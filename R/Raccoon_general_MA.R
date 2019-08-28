@@ -7,9 +7,6 @@
 library(ggplot2)
 library(MultiAmplicon)
 library(reshape)
-library(phyloseq)
-library(data.table)
-library(taxonomizr)
 library(taxize)
 library(parallel)
 
@@ -115,19 +112,21 @@ MAR <- addSampleData(MAR)
 
 ###New taxonomic assignment
 
-if (doTax){
-  Sys.setenv("BLASTDB" = "/SAN/db/blastdb/") #To make the annotation work, boss will fix this in the package
-  library("vctrs", lib.loc="/usr/local/lib/R/site-library")
-  MAR2 <- blastTaxAnnot(MAR,  dataBaseDir = Sys.getenv("BLASTDB"), negative_gilist = "/SAN/db/blastdb/uncultured.gi", num_threads = 22)
-  saveRDS(MAR2, file="/SAN/Victors_playground/Metabarcoding/AA_Raccoon/MAR2.Rds")
+if (doTax){ ## simply save the blast files, that's even faster than
+            ## setting doTax to FALSE and re-loading the object
+    MAR2 <- blastTaxAnnot(MAR,  
+                          negative_gilist = "/SAN/db/blastdb/uncultured.gi",
+                          db = "/SAN/db/blastdb/nt/nt",
+                          infasta = "/SAN/Victors_playground/Metabarcoding/AA_Raccoon/in.fasta",
+                          outblast = "/SAN/Victors_playground/Metabarcoding/AA_Raccoon/out.blt",
+                          num_threads = 22)
+    saveRDS(MAR2, file="/SAN/Victors_playground/Metabarcoding/AA_Raccoon/MAR2.Rds")
 } else {
-  MAR <- readRDS(file="/SAN/Victors_playground/Metabarcoding/AA_Raccoon/MAR2.Rds")
+  MAR2 <- readRDS(file="/SAN/Victors_playground/Metabarcoding/AA_Raccoon/MAR2.Rds")
 }
 
-#rm(MAR2)
-##MAR2.Rds contains the taxonomic annotation data 
-
-trackingF <- getPipelineSummary(MAR2) 
+### Bugging probably an edge case with an empty amplicon
+## trackingF <- getPipelineSummary(MAR2) 
 
 plotAmpliconNumbers(MAR2, cluster_cols= F)
 
@@ -135,288 +134,196 @@ plotAmpliconNumbers(MAR2, cluster_cols= F)
 ## plotPipelineSummary(trackingF) + scale_y_log10()
 
 lapply(getTaxonTable(MAR2), function (x) table(as.vector(x[, "phylum"])))
-
 lapply(getTaxonTable(MAR2), function (x) table(as.vector(x[, "genus"])))
-
 lapply(getTaxonTable(MAR2), function (x) table(as.vector(x[, "species"])))
 
-###Add sample data 
-sample.dataR <- read.csv("~/AA_Raccoon/Raccoon_sample_data.csv")
-rownames(sample.dataR) <- sample.dataR$plate_ID
-
-MARsample <- addSampleData(MAR2, sample.dataR)
-
-clust <- plotAmpliconNumbers(MARsample[, which(colnames(MARsample)%in%
-                                       sample.dataR$plate_ID)])
-
-clusters.row <- cutree(clust$tree_row, k=12) ##Eliminate the 5 primer pairs that didn't work
-clusters.col <- cutree(clust$tree_col, k=3) ##Eliminate negative controls and samples didn't work
-
-keep.prime <- names(clusters.row)[clusters.row!=5]
-keep.sample <- names(clusters.col)[clusters.col!=3]
+PS.l <- toPhyloseq(MAR2, samples=colnames(MAR2), multi2Single=FALSE)
+PS <- toPhyloseq(MAR2, samples=colnames(MAR2), multi2Single=TRUE)
 
 
-MAR3 <- MARsample[which(rownames(MARsample)%in%keep.prime),
-                which(colnames(MARsample)%in%
-                        keep.sample &
-                        colnames(MARsample)%in% sample.dataR$plate_ID)]
+## ## just commented out everything that will work much more nicely
+## ## now, but needs to be rewritten...
 
-plotAmpliconNumbers(MAR3)
+### ### 
 
-###Phyloseq object
-PS <- toPhyloseq(MAR3, samples=colnames(MAR3))
-###Still not working :S 
+## getNumReadsByTax <- function (Phy, tax){
+##     sumSeqByTax <- function (Phy, tax) {
+##         counts <- data.frame(cbind(asvCount=colSums(otu_table(Phy)), tax_table(Phy)))
+##         counts$asvCount <- as.numeric(as.character(counts$asvCount))
+##         tapply(counts$asvCount, counts[, tax], sum)
+##     }
+##     readNumByPhylum <- lapply(Phy, getNumReadsByTax, tax)
+##     names(readNumByPhylum) <- rownames()
 
-####Old Pipeline for taxonomic assignment####
-###Extract sequences to do taxonomic assignment 
+##     mergeDf <- function(x, y) {
+##         m <- merge(x, y,  by=0, all=TRUE)
+##         rownames(m) <- m$Row.names
+##         m$Row.names <- NULL
+##         m
+##     }
 
-STNCR <- getSequenceTableNoChime(MAR)
-#save(STNCR, file="/SAN/Victors_playground/Metabarcoding/AA_Raccoon/STNCR_table_combi.Rdata")
-
-sequences <- unlist(lapply(STNCR, colnames))
-names(sequences) <- paste0("asv_", 1:length(sequences))
-
-if(doTax){
-  library(taxonomizr)
-  library(taxize)
-  
-  Biostrings::writeXStringSet(DNAStringSet(unlist(sequences)),
-                              "/SAN/Victors_playground/Metabarcoding/AA_Raccoon/RaccRun_seq_combined.fasta")
-  
-  clusters <- plotAmpliconNumbers(MAR) 
-  
-  ###BLAST
-  ## blastn -negative_gilist /SAN/db/blastdb/uncultured.gi -query /SAN/Victors_playground/Metabarcoding/AA_Raccoonn/RaccRun_seq_final.fasta -db /SAN/db/blastdb/nt/nt -outfmt 11 -evalue 1e-5 -num_threads 10 -out /SAN/Victors_playground/Metabarcoding/AA_Raccoon/asv_vs_nt_raccfinal.asn
-  
-  ## blast_formatter -archive /SAN/Victors_playground/Metabarcoding/AA_Racc/asv_vs_nt_raccfinal.asn -outfmt "10 qaccver saccver pident length mismatch gapopen qstart qend sstart send evalue bitscore staxid" > /SAN/Victors_playground/Metabarcoding/AA_Raccoon/asv_nt_raccfinal.blttax
-  
-  ###Read blast result 
-  ## we read that ouput into R blast <-
-  blast <- read.csv("/SAN/Victors_playground/Metabarcoding/AA_Raccoon/asv_vs_nt_RaccComb.blttax", header=FALSE)
-  
-  names(blast) <- c("query", "subject", "pident", "length", "mismatch",
-                    "gapopen", "qstart", "qend", "sstart", "send", "evalue",
-                    "bitscore", "staxid")
-  blast <- as.data.table(blast)
-  blast$staxid <- as.character(blast$staxid)
-  
-  read.nodes.sql("/SAN/db/taxonomy/nodes.dmp",
-                 "/SAN/db/taxonomy/taxonomizr.sql")
-  read.names.sql("/SAN/db/taxonomy/names.dmp",
-                 "/SAN/db/taxonomy/taxonomizr.sql")
-  
-  blast.tax <- getTaxonomy(unique(blast$staxid),
-                           "/SAN/db/taxonomy/taxonomizr.sql")
-  
-  blast.tax <- as.data.table(blast.tax, keep.rownames="staxid")
-  blast.tax$staxid <- gsub("\\s*", "", blast.tax$staxid)
-  
-  blt <- merge(blast, blast.tax, by="staxid", all=TRUE)
-  
-  ## ## ## We need to be more clever if we want to use multiple
-  ## ## ## hsps, this does not work for whole genome subjects eg.
-  ### blt <- blt[,.(bitsum=sum(bitscore),
-  ###              superkingdom, phylum, class, order, family, genus, species),
-  ###           by=c("query", "subject")]
-  
-  ###    blt <- unique(blt)
-  
-  blt <- blt[,.(bitdiff= bitscore - max(bitscore),
-                superkingdom, phylum, class, order, family, genus, species),
-             by=c("query")]
-  
-  get.unique.or.na <- function (x){
-    ## unique taxa at that level excluding potential NA's 
-    ux <- unique(as.character(x[!is.na(x)]))
-    ## but return NA if they are not unique
-    if(length(ux)==1){return(ux)} else {as.character(NA)}
-  }
-  
-  species <- blt[bitdiff>-2, .(species=get.unique.or.na(species)),
-                 by=query]
-  
-  genus <- blt[bitdiff>-2, .(genus=get.unique.or.na(genus)),
-               by=query]
-  
-  family <- blt[bitdiff>-7, .(family=get.unique.or.na(family)),
-                by=query]
-  
-  order <- blt[bitdiff>-12, .(order=get.unique.or.na(order)),
-               by=query]
-  
-  class <- blt[bitdiff>-20, .(class=get.unique.or.na(class)),
-               by=query]
-  
-  phylum <- blt[bitdiff>-30, .(phylum=get.unique.or.na(phylum)),
-                by=query]
-  
-  superkingdom <- blt[bitdiff>-50, .(superkingdom=get.unique.or.na(superkingdom)),
-                      by=query]
-  
-  annot <- cbind(superkingdom[,c("query", "superkingdom")],
-                 phylum[,"phylum"],
-                 class[,"class"],
-                 order[,"order"],
-                 family[,"family"],
-                 genus[,"genus"],
-                 species[,"species"])
-  
-  seqnametab <- as.data.table(cbind(query=names(sequences), sequences))
-  seqnametab <- merge(seqnametab, annot)
-  
-  dupseq <- seqnametab$sequences[duplicated(seqnametab$sequences)]
-  
-  seqnametab <- seqnametab[!duplicated(seqnametab$sequences),]
-  
-  annot.list <- lapply(STNCR, function (x) {
-    setkey(seqnametab, sequences)
-    seqnametab[colnames(x),
-               c("superkingdom", "phylum", "class", "order", "family", "genus", "species")]
-  })
-  
-  saveRDS(annot.list, file="/SAN/Victors_playground/Metabarcoding/AA_Raccoon/Racc_blast_tax_all.Rds")
-} else{
-  annot.list <- readRDS(file="/SAN/Victors_playground/Metabarcoding/AA_Raccoon/Racc_blast_tax_all.Rds")
-}
+##     foo <- Reduce(mergeDf, readNumByPhylum)
+##     colnames(foo) <- rownames(MA8)
+##     foo[is.na(foo)] <- 0
+##     foo
+## }
 
 
-## ## Not needed anymore
-## keepr <- unlist(lapply(annot.list, nrow))>0
-## annot.list <- annot.list[keep]
-## STNC <- STNC[keep]
+## ###Add sample data 
+## sample.dataR <- read.csv("~/AA_Raccoon/Raccoon_sample_data.csv")
+## rownames(sample.dataR) <- sample.dataR$plate_ID
+
+## MARsample <- addSampleData(MAR2, sample.dataR)
+
+## clust <- plotAmpliconNumbers(MARsample[, which(colnames(MARsample)%in%
+##                                        sample.dataR$plate_ID)])
+
+## clusters.row <- cutree(clust$tree_row, k=12) ##Eliminate the 5 primer pairs that didn't work
+## clusters.col <- cutree(clust$tree_col, k=3) ##Eliminate negative controls and samples didn't work
+
+## keep.prime <- names(clusters.row)[clusters.row!=5]
+## keep.sample <- names(clusters.col)[clusters.col!=3]
 
 
-## name the annotation lists to have the names of the taxa 
-annot.list <- lapply(seq_along(annot.list), function (i){
-  an <- as.matrix(annot.list[[i]])
-  rownames(an) <- colnames(STNCR[[i]])
-  an
-})
+## MAR3 <- MARsample[which(rownames(MARsample)%in%keep.prime),
+##                 which(colnames(MARsample)%in%
+##                         keep.sample &
+##                         colnames(MARsample)%in% sample.dataR$plate_ID)]
 
-names(annot.list) <- names(STNCR)
-
-phylalist <- lapply(annot.list, function (x) {
-  if(nrow(x)>0){
-    table(x[, "phylum"])
-  }
-})
+## plotAmpliconNumbers(MAR3)
 
 
-tabulate.taxa <- function(taxtab, taxon, phylumsubset){
-  if(nrow(taxtab)>0){
-    t <- taxtab[taxtab[, "phylum"]%in%phylumsubset, ]
-    if(!is.null(ncol(t))){
-      table(t[, taxon])
-    } else {NULL} 
-  }else {NULL} 
-}
+## ## name the annotation lists to have the names of the taxa 
+## annot.list <- lapply(seq_along(annot.list), function (i){
+##   an <- as.matrix(annot.list[[i]])
+##   rownames(an) <- colnames(STNCR[[i]])
+##   an
+## })
+
+## names(annot.list) <- names(STNCR)
+
+## phylalist <- lapply(annot.list, function (x) {
+##   if(nrow(x)>0){
+##     table(x[, "phylum"])
+##   }
+## })
 
 
-## Tabulate by specific phylum
-lapply(annot.list, function (x) tabulate.taxa(x,  "genus", "Cestoda"))
-lapply(annot.list, function (x) tabulate.taxa(x,  "species", "Nematoda"))
-lapply(annot.list, function (x) tabulate.taxa(x,  "species", "Apicomplexa"))
-lapply(annot.list, function (x) tabulate.taxa(x, "genus",  "Platyhelminthes"))
-lapply(annot.list, function (x) tabulate.taxa(x, "genus", "Streptophyta"))
-lapply(annot.list, function (x) tabulate.taxa(x, "genus", "Ascomycota"))
-lapply(annot.list, function (x) tabulate.taxa(x, "genus", "Chordata"))
-lapply(annot.list, function (x) tabulate.taxa(x, "species", "Chordata"))
-lapply(annot.list, function (x) tabulate.taxa(x, "phylum", "Ascomycota"))
-lapply(annot.list, function (x) tabulate.taxa(x, "genus", "Amphibia"))
+## tabulate.taxa <- function(taxtab, taxon, phylumsubset){
+##   if(nrow(taxtab)>0){
+##     t <- taxtab[taxtab[, "phylum"]%in%phylumsubset, ]
+##     if(!is.null(ncol(t))){
+##       table(t[, taxon])
+##     } else {NULL} 
+##   }else {NULL} 
+## }
 
 
-### Add sample information
-library(phyloseq)
-sample.dataR <- read.csv("~/AA_Raccoon/Raccoon_sample_data.csv")
-rownames(sample.dataR) <- sample.dataR$plate_ID
+## ## Tabulate by specific phylum
+## lapply(annot.list, function (x) tabulate.taxa(x,  "genus", "Cestoda"))
+## lapply(annot.list, function (x) tabulate.taxa(x,  "species", "Nematoda"))
+## lapply(annot.list, function (x) tabulate.taxa(x,  "species", "Apicomplexa"))
+## lapply(annot.list, function (x) tabulate.taxa(x, "genus",  "Platyhelminthes"))
+## lapply(annot.list, function (x) tabulate.taxa(x, "genus", "Streptophyta"))
+## lapply(annot.list, function (x) tabulate.taxa(x, "genus", "Ascomycota"))
+## lapply(annot.list, function (x) tabulate.taxa(x, "genus", "Chordata"))
+## lapply(annot.list, function (x) tabulate.taxa(x, "species", "Chordata"))
+## lapply(annot.list, function (x) tabulate.taxa(x, "phylum", "Ascomycota"))
+## lapply(annot.list, function (x) tabulate.taxa(x, "genus", "Amphibia"))
 
 
-PS.l <- lapply(seq_along(STNCR)[keepr], function(i){
-  phyloseq(otu_table(STNCR[[i]], taxa_are_rows=FALSE),
-           sample_data(sample.dataR[rownames(STNCR[[i]]), ]),
-           tax_table(annot.list[[i]]))
-})
-
-#PS.l <- lapply(seq_along(STNCR)[keep], function(i){
-#        phyloseq(otu_table(STNCR[[i]], taxa_are_rows=FALSE),
-#           tax_table(annot.list[[i]]))
-#}) ###Just used without sample information
+## ### Add sample information
+## library(phyloseq)
+## sample.dataR <- read.csv("~/AA_Raccoon/Raccoon_sample_data.csv")
+## rownames(sample.dataR) <- sample.dataR$plate_ID
 
 
-#samples <- as.data.frame(list.files("/SAN/Victors_playground/Metabarcoding/AA_Raccoon/2018_22_Raccoon/"))
-#colnames(samples) <- "sample_id" 
-#samples <- gsub(pattern = "_R\\d+_001.fastq.gz", "", samples$sample_id)
-#samples <- as.data.frame(unique(samples))
-#colnames(samples) <- "sample_id" 
-#write.csv(samples, "/localstorage/victor/AA_Primer_evaluation/Sample_raccoon.csv")
+## PS.l <- lapply(seq_along(STNCR)[keepr], function(i){
+##   phyloseq(otu_table(STNCR[[i]], taxa_are_rows=FALSE),
+##            sample_data(sample.dataR[rownames(STNCR[[i]]), ]),
+##            tax_table(annot.list[[i]]))
+## })
+
+## #PS.l <- lapply(seq_along(STNCR)[keep], function(i){
+## #        phyloseq(otu_table(STNCR[[i]], taxa_are_rows=FALSE),
+## #           tax_table(annot.list[[i]]))
+## #}) ###Just used without sample information
 
 
-#samples <- gsub(pattern = "S\\d+_\\d+_", "", samples$`unique(samples)`)
-
-sumSeqByTax <- function (Phy, tax) {
-  counts <- data.frame(cbind(asvCount=colSums(otu_table(Phy)), tax_table(Phy)))
-  counts$asvCount <- as.numeric(as.character(counts$asvCount))
-  tapply(counts$asvCount, counts[, tax], sum)
-}
-
-readNumByPhylum <- lapply(PS.l, sumSeqByTax, "phylum")
-names(readNumByPhylum) <- names(STNCR)[keepr]
+## #samples <- as.data.frame(list.files("/SAN/Victors_playground/Metabarcoding/AA_Raccoon/2018_22_Raccoon/"))
+## #colnames(samples) <- "sample_id" 
+## #samples <- gsub(pattern = "_R\\d+_001.fastq.gz", "", samples$sample_id)
+## #samples <- as.data.frame(unique(samples))
+## #colnames(samples) <- "sample_id" 
+## #write.csv(samples, "/localstorage/victor/AA_Primer_evaluation/Sample_raccoon.csv")
 
 
-readNumByGenus <- lapply(PS.l, sumSeqByTax, "genus") ## Change "text" in order to get counts per a different taxonomic level
-names(readNumByGenus) <- names(STNCR)[keepr]
+## #samples <- gsub(pattern = "S\\d+_\\d+_", "", samples$`unique(samples)`)
+
+## sumSeqByTax <- function (Phy, tax) {
+##   counts <- data.frame(cbind(asvCount=colSums(otu_table(Phy)), tax_table(Phy)))
+##   counts$asvCount <- as.numeric(as.character(counts$asvCount))
+##   tapply(counts$asvCount, counts[, tax], sum)
+## }
+
+## readNumByPhylum <- lapply(PS.l, sumSeqByTax, "phylum")
+## names(readNumByPhylum) <- names(STNCR)[keepr]
 
 
-readNumByfamily <- lapply(PS.l, sumSeqByTax, "family") ## Change "text" in order to get counts per a different taxonomic level
-names(readNumByfamily) <- names(STNCR)[keepr]
-
-readNumByspecies <- lapply(PS.l, sumSeqByTax, "species") ## Change "text" in order to get counts per a different taxonomic level
-names(readNumByspecies) <- names(STNCR)[keepr]
-
-####
-makeSequenceTableMulti(MAR)
-
-##funtion fillSampleTables is not working
-
-fill <- fillSampleTables(MAR)
-MAR@sequenceTableFilled <- fill@sequenceTableFilled
-
-MAR@sampleData
-
-## Analyse all at once for now
-ALL <- Reduce(cbind, fill@sequenceTableFilled[keepr])
-
-## Problem: over all amplicons some ASVs are identical...
-table(duplicated(colnames(ALL)))
-
-## sum up same reads over amplicons
-ALL.u <- do.call(rbind, by(t(ALL), rownames(t(ALL)), colSums))
-
-## same for tax
-all.tax <- Reduce(rbind, annot.list[rownames(MAR)[keep]])
-all.tax <- all.tax[rownames(ALL.u), ]
+## readNumByGenus <- lapply(PS.l, sumSeqByTax, "genus") ## Change "text" in order to get counts per a different taxonomic level
+## names(readNumByGenus) <- names(STNCR)[keepr]
 
 
-PS <- phyloseq(otu_table(ALL.u, taxa_are_rows=TRUE),
-               sample_data(sample.data[rownames(ALL), ]),
-               tax_table(all.tax))
+## readNumByfamily <- lapply(PS.l, sumSeqByTax, "family") ## Change "text" in order to get counts per a different taxonomic level
+## names(readNumByfamily) <- names(STNCR)[keepr]
 
-prune_both_zero <- function (ps) {
-  p <- prune_samples(sample_sums(ps) > 0 , ps)
-  prune_taxa(taxa_sums(p) > 0 , p)
-}
+## readNumByspecies <- lapply(PS.l, sumSeqByTax, "species") ## Change "text" in order to get counts per a different taxonomic level
+## names(readNumByspecies) <- names(STNCR)[keepr]
 
-PS <- prune_both_zero(PS)
-PS.l <- lapply(PS.l, prune_both_zero)
-names(PS.l) <- names(STNCR)[keepr]
+## ####
+## makeSequenceTableMulti(MAR)
+
+## ##funtion fillSampleTables is not working
+
+## fill <- fillSampleTables(MAR)
+## MAR@sequenceTableFilled <- fill@sequenceTableFilled
+
+## MAR@sampleData
+
+## ## Analyse all at once for now
+## ALL <- Reduce(cbind, fill@sequenceTableFilled[keepr])
+
+## ## Problem: over all amplicons some ASVs are identical...
+## table(duplicated(colnames(ALL)))
+
+## ## sum up same reads over amplicons
+## ALL.u <- do.call(rbind, by(t(ALL), rownames(t(ALL)), colSums))
+
+## ## same for tax
+## all.tax <- Reduce(rbind, annot.list[rownames(MAR)[keep]])
+## all.tax <- all.tax[rownames(ALL.u), ]
 
 
-################# ## HOW TO GO ON FROM HERE ## ######################
-#### PS is now a single Phyloseq object over all amplicons. 
+## PS <- phyloseq(otu_table(ALL.u, taxa_are_rows=TRUE),
+##                sample_data(sample.data[rownames(ALL), ]),
+##                tax_table(all.tax))
 
-## For Phyloseq see: https://joey711.github.io/phyloseq/tutorials-index.html
+## prune_both_zero <- function (ps) {
+##   p <- prune_samples(sample_sums(ps) > 0 , ps)
+##   prune_taxa(taxa_sums(p) > 0 , p)
+## }
+
+## PS <- prune_both_zero(PS)
+## PS.l <- lapply(PS.l, prune_both_zero)
+## names(PS.l) <- names(STNCR)[keepr]
 
 
-saveRDS(PS.l, file="/SAN/Victors_playground/Metabarcoding/AA_Raccoon/PhyloSeqList_Raccall.Rds") ###For primer analysis (Victor)
-saveRDS(PS, file="/SAN/Victors_playground/Metabarcoding/AA_Fox/PhyloSeqCombi.Rds") ###For Fox analysis (Caro and Sophia)
+## ################# ## HOW TO GO ON FROM HERE ## ######################
+## #### PS is now a single Phyloseq object over all amplicons. 
+
+## ## For Phyloseq see: https://joey711.github.io/phyloseq/tutorials-index.html
+
+
+## saveRDS(PS.l, file="/SAN/Victors_playground/Metabarcoding/AA_Raccoon/PhyloSeqList_Raccall.Rds") ###For primer analysis (Victor)
+## saveRDS(PS, file="/SAN/Victors_playground/Metabarcoding/AA_Fox/PhyloSeqCombi.Rds") ###For Fox analysis (Caro and Sophia)
 
