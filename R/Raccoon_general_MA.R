@@ -1,14 +1,13 @@
 ## Please uncomment the first time you run this and re-install packages
 
 #require(devtools)
-#devtools::install_github("derele/MultiAmplicon", force= T)
+## devtools::install_github("derele/MultiAmplicon", force= T)
 ## devtools::install_github("derele/dada2", force= T)
+## library(MultiAmplicon)
 
-library(ggplot2)
-library(MultiAmplicon)
-library(reshape)
-library(taxize)
-library(parallel)
+## using the dev version!
+devtools::load_all("../MultiAmplicon")
+
 
 ## re-run or use pre-computed results for different parts of the pipeline:
 ## Set to FALSE to use pre-computed and saved results, TRUE to redo analyses.
@@ -82,50 +81,44 @@ if(doMultiAmp){
   filedir <- "/SAN/Victors_playground/Metabarcoding/AA_Raccoon/Stratified_files"
   if(dir.exists(filedir)) unlink(filedir, recursive=TRUE)
   MAR <- sortAmplicons(MAR, n=1e+05, filedir=filedir)
-  
   errF <-  learnErrors(unlist(getStratifiedFilesF(MAR)), nbase=1e8,
                        verbose=0, multithread = 12)
   errR <- learnErrors(unlist(getStratifiedFilesR(MAR)), nbase=1e8,
                       verbose=0, multithread = 12)
-  
   MAR <- derepMulti(MAR, mc.cores=12) 
-  
   MAR <- dadaMulti(MAR, Ferr=errF, Rerr=errR,  pool=FALSE,
                      verbose=0, mc.cores=12)
-  
   MAR <- mergeMulti(MAR, mc.cores=12) 
-  
   propMerged <- MultiAmplicon::calcPropMerged(MAR)
-  
   MAR <- mergeMulti(MAR, mc.cores=12) 
-  
   MAR <- makeSequenceTableMulti(MAR, mc.cores=12) ## FIXME in package!!!
-  
   MAR <- removeChimeraMulti(MAR, mc.cores=12)
-  
   saveRDS(MAR, "/SAN/Victors_playground/Metabarcoding/AA_Raccoon/MAR_complete.RDS")
 } else{
   MAR <- readRDS("/SAN/Victors_playground/Metabarcoding/AA_Raccoon/MAR_complete.RDS") ###START from here now! 
 }
+
 ## When loading an old MA object that lacks sample data, simply:
-MAR <- addSampleData(MAR)
+## MAR <- addSampleData(MAR)
 
 ###New taxonomic assignment
 
 if (doTax){ ## simply save the blast files, that's even faster than
-            ## setting doTax to FALSE and re-loading the object
-    MAR2 <- blastTaxAnnot(MAR,  
-                          negative_gilist = "/SAN/db/blastdb/uncultured.gi",
-                          db = "/SAN/db/blastdb/nt/nt",
-                          infasta = "/SAN/Victors_playground/Metabarcoding/AA_Raccoon/in.fasta",
-                          outblast = "/SAN/Victors_playground/Metabarcoding/AA_Raccoon/out.blt",
-                          num_threads = 22)
-    saveRDS(MAR2, file="/SAN/Victors_playground/Metabarcoding/AA_Raccoon/MAR2.Rds")
-} else {
-  MAR2 <- readRDS(file="/SAN/Victors_playground/Metabarcoding/AA_Raccoon/MAR2.Rds")
+    unlink("/SAN/Metabarcoding/AA_Raccoon/in.fasta")
+    unlink("/SAN/Metabarcoding/AA_Roccoon/out.blt")
 }
 
-### Bugging probably an edge case with an empty amplicon
+## setting doTax to FALSE and re-loading the object
+MAR2 <- blastTaxAnnot(MAR,  
+                      negative_gilist = "/SAN/db/blastdb/uncultured.gi",
+                      db = "/SAN/db/blastdb/nt/nt",
+                      infasta = "/SAN/Victors_playground/Metabarcoding/AA_Raccoon/in.fasta",
+                      outblast = "/SAN/Victors_playground/Metabarcoding/AA_Raccoon/out.blt",
+                      num_threads = 22)
+
+### Bugging probably an edge case with an empty amplicon which might
+### in turn be fixed by changing what the amplicon piplene stores in
+### those objects if you recompute them ... recompute and check that!
 ## trackingF <- getPipelineSummary(MAR2) 
 
 plotAmpliconNumbers(MAR2, cluster_cols= F)
